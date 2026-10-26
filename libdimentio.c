@@ -1056,7 +1056,7 @@ kalloc_array_decode(kaddr_t *addr) {
 				if(((*addr >> kalloc_array_type_shift) & 1U) != 0) {
 					*addr &= ~0x1FULL;
 				} else {
-					*addr &= ~((1U << ARM_PGSHIFT_16K) - 1U);
+					*addr &= ~((1ULL << ARM_PGSHIFT_16K) - 1ULL);
 					*addr |= 1ULL << kalloc_array_type_shift;
 				}
 			} else {
@@ -1064,7 +1064,7 @@ kalloc_array_decode(kaddr_t *addr) {
 				if(((*addr >> kalloc_array_type_shift) & 3U) != 0) {
 					*addr &= ~0xFULL;
 				} else {
-					*addr &= ~((1U << ARM_PGSHIFT_16K) - 1U);
+					*addr &= ~((1ULL << ARM_PGSHIFT_16K) - 1ULL);
 					*addr |= 3ULL << kalloc_array_type_shift;
 				}
 			}
