@@ -331,6 +331,7 @@ init_tfp0(void) {
 			return ret;
 		}
 		mach_port_deallocate(mach_task_self(), tfp0);
+		tfp0 = TASK_NULL;
 	}
 	return KERN_FAILURE;
 }
@@ -711,7 +712,10 @@ get_boot_path(void) {
 			path_len += strlen(PREBOOT_PATH);
 #if TARGET_OS_OSX
 			if((boot_objects_path_cf = IORegistryEntryCreateCFProperty(chosen, CFSTR("boot-objects-path"), kCFAllocatorDefault, kNilOptions)) != NULL) {
-				if(CFGetTypeID(boot_objects_path_cf) == CFDataGetTypeID() && (boot_objects_path_len = (size_t)CFDataGetLength(boot_objects_path_cf) - 1) != 0) {
+				/* Length includes a trailing NUL; reject empty data outright
+				 * instead of underflowing (length - 1) to SIZE_MAX. */
+				if(CFGetTypeID(boot_objects_path_cf) == CFDataGetTypeID() && (boot_objects_path_len = (size_t)CFDataGetLength(boot_objects_path_cf)) > 1) {
+					boot_objects_path_len -= 1;
 					path_len += boot_objects_path_len;
 					if((path = malloc(path_len)) != NULL) {
 						memcpy(path, PREBOOT_PATH, strlen(PREBOOT_PATH));
@@ -802,7 +806,7 @@ pfinder_xref_str(pfinder_t pfinder, const char *str, uint32_t rd) {
 	const char *p, *e;
 	size_t len;
 
-	for(p = pfinder.sec_cstring.data, e = p + pfinder.sec_cstring.s64.size; p != e; p += len) {
+	for(p = pfinder.sec_cstring.data, e = p + pfinder.sec_cstring.s64.size; p < e; p += len) {
 		len = strlen(p) + 1;
 		if(strncmp(str, p, len) == 0) {
 			return pfinder_xref_rd(pfinder, rd, pfinder.sec_text.s64.addr, pfinder.sec_cstring.s64.addr + (kaddr_t)(p - pfinder.sec_cstring.data));
@@ -1304,14 +1308,20 @@ dimentio_preinit(uint64_t *nonce, bool set, uint8_t nonce_d[CC_SHA384_DIGEST_LEN
 
 void
 dimentio_term(void) {
+	/* Reset after release so a later dimentio_init() never sees a dead
+	 * port, a closed library, or a closed fd. */
 	if(tfp0 != TASK_NULL) {
 		mach_port_deallocate(mach_task_self(), tfp0);
+		tfp0 = TASK_NULL;
 	} else if(kernrw_0 != NULL) {
 		dlclose(kernrw_0);
+		kernrw_0 = NULL;
 	} else if(krw_0 != NULL) {
 		dlclose(krw_0);
+		krw_0 = NULL;
 	} else if(kmem_fd != -1) {
 		close(kmem_fd);
+		kmem_fd = -1;
 	}
 	setpriority(PRIO_PROCESS, 0, 0);
 }
@@ -1358,12 +1368,16 @@ dimentio_init(kaddr_t _kbase, kread_func_t _kread_buf, kwrite_func_t _kwrite_buf
 		}
 		if(tfp0 != TASK_NULL) {
 			mach_port_deallocate(mach_task_self(), tfp0);
+			tfp0 = TASK_NULL;
 		} else if(kernrw_0 != NULL) {
 			dlclose(kernrw_0);
+			kernrw_0 = NULL;
 		} else if(krw_0 != NULL) {
 			dlclose(krw_0);
+			krw_0 = NULL;
 		} else if(kmem_fd != -1) {
 			close(kmem_fd);
+			kmem_fd = -1;
 		}
 	}
 	return KERN_FAILURE;
@@ -1374,6 +1388,7 @@ dimentio(uint64_t *nonce, bool set, uint8_t nonce_d[CC_SHA384_DIGEST_LENGTH], si
 	io_registry_entry_t nvram_entry = IORegistryEntryFromPath(kIOMasterPortDefault, kIODeviceTreePlane ":/options");
 	char nonce_hex[2 * sizeof(*nonce) + sizeof("0x")];
 	kaddr_t of_dict, os_string, string_ptr;
+	uint32_t os_string_len;
 	kern_return_t ret = KERN_FAILURE;
 
 	if(nvram_entry != IO_OBJECT_NULL) {
@@ -1390,7 +1405,11 @@ dimentio(uint64_t *nonce, bool set, uint8_t nonce_d[CC_SHA384_DIGEST_LENGTH], si
 						printf("string_ptr: " KADDR_FMT "\n", string_ptr);
 						if(set) {
 							snprintf(nonce_hex, sizeof(nonce_hex), "0x%016" PRIx64, *nonce);
-							if(kwrite_buf(string_ptr, nonce_hex, sizeof(nonce_hex)) == KERN_SUCCESS) {
+							/* The existing OSString buffer must hold the full
+							 * 19-byte "0x%016" string; a shorter buffer (e.g. a
+							 * previously set short nonce) would overflow the
+							 * kernel heap object, so refuse instead. */
+							if(kread_buf(os_string + OS_STRING_LEN_OFF, &os_string_len, sizeof(os_string_len)) == KERN_SUCCESS && OS_STRING_LEN(os_string_len) >= sizeof(nonce_hex) && kwrite_buf(string_ptr, nonce_hex, sizeof(nonce_hex)) == KERN_SUCCESS) {
 								ret = sync_nonce(nvram_entry);
 							}
 						} else if(kread_buf(string_ptr, nonce_hex, sizeof(nonce_hex)) == KERN_SUCCESS && sscanf(nonce_hex, "0x%016" PRIx64, nonce) == 1) {

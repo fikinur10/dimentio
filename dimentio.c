@@ -13,6 +13,32 @@
  * limitations under the License.
  */
 #include "libdimentio.h"
+#include <ctype.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* Strict nonce argument parser: exactly "0x" + 1..16 hex digits. The old
+ * sscanf("0x%016" PRIx64) silently truncated longer inputs and ignored
+ * trailing garbage, and a failed parse failed silently. */
+static bool
+parse_nonce(const char *str, uint64_t *nonce) {
+	size_t i, len;
+
+	if(strncmp(str, "0x", 2) != 0) {
+		return false;
+	}
+	len = strlen(str + 2);
+	if(len == 0 || len > 16) {
+		return false;
+	}
+	for(i = 0; i < len; ++i) {
+		if(!isxdigit((unsigned char)str[2 + i])) {
+			return false;
+		}
+	}
+	*nonce = strtoull(str + 2, NULL, 16);
+	return true;
+}
 
 int
 main(int argc, char **argv) {
@@ -23,7 +49,10 @@ main(int argc, char **argv) {
 
 	if(argc != 1 && argc != 2) {
 		printf("Usage: %s [nonce]\n", argv[0]);
-	} else if(argc == 1 || sscanf(argv[1], "0x%016" PRIx64, &nonce) == 1) {
+	} else if(argc == 2 && !parse_nonce(argv[1], &nonce)) {
+		printf("Invalid nonce: %s\n", argv[1]);
+		printf("Usage: %s [nonce]\n", argv[0]);
+	} else {
 		if(dimentio_preinit(&nonce, argc == 2, nonce_d, &nonce_d_sz) == KERN_SUCCESS || (dimentio_init(0, NULL, NULL) == KERN_SUCCESS && dimentio(&nonce, argc == 2, nonce_d, &nonce_d_sz) == KERN_SUCCESS)) {
 			if(argc == 1) {
 				printf("Current nonce is 0x%016" PRIX64 "\n", nonce);
